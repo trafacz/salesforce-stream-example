@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+	xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc"
+	xmlns:json="http://www.mulesoft.org/schema/mule/json" 
+	xmlns:spring="http://www.springframework.org/schema/beans" version="EE-3.4.1"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd
+http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd">
+
+
+	<sfdc:config name="Salesforce" username="trafacz@confluex.com" password="pwd" securityToken="token" doc:name="Salesforce">
+        <sfdc:connection-pooling-profile initialisationPolicy="INITIALISE_ONE" exhaustedAction="WHEN_EXHAUSTED_GROW"/>
+    </sfdc:config>
+    
+    <flow name="Salesforce_Stream_Example" doc:name="Salesforce_Stream_Example">
+		
+		<sfdc:subscribe-topic config-ref="Salesforce"
+			topic="/StreamEventUpdates" doc:name="Salesforce (Streaming)" />
+		<logger level="INFO" category="com.confluex.Salesforce_Stream_Example" doc:name="Logger"
+			message="Received notification from Salesforce, payload = #[payload]" />
+        
+        <vm:outbound-endpoint exchange-pattern="one-way" path="contact-changes" doc:name="contact-changes"/>
+		
+	</flow>
+	
+	
+	<flow name="Process_Contact_Changes" doc:name="Process_Contact_Changes" doc:description="Process Contact Changes">
+    	
+    	<vm:inbound-endpoint exchange-pattern="one-way" path="contact-changes" doc:name="contact-changes"/>
+    	<logger level="DEBUG" category="com.confluex.Process_Contact_Changes" doc:name="Payload Logger" />
+    	
+    	<set-variable variableName="id" value="#[payload.Id]" doc:name="Variable"/>
+
+		<sfdc:retrieve config-ref="Salesforce" doc:name="Salesforce" type="Contact">
+			<sfdc:ids ref="#[[payload['ContactID__c']]]"/>
+            <sfdc:fields>
+            	<sfdc:field>Id</sfdc:field>
+            	<sfdc:field>FirstName</sfdc:field>
+            	<sfdc:field>LastName</sfdc:field>
+            	<sfdc:field>Phone</sfdc:field>
+            	<sfdc:field>Email</sfdc:field>
+            </sfdc:fields>
+        </sfdc:retrieve>
+        <set-payload value="#[payload[0]]" doc:name="Set Payload"/>
+        <logger level="INFO" category="com.confluex.Process_Contact_Changes" 
+        	message="After sfdc:retrieve, payload = #[payload]" doc:name="Logger"/>
+        
+		<sfdc:update-single config-ref="Salesforce"	type="Stream_Event__c" doc:name="Salesforce">
+			<sfdc:object>
+				<sfdc:object key="Status__c">Processed</sfdc:object>
+				<sfdc:object key="Synch_Date__c" value-ref="#[new java.util.GregorianCalendar()]" />
+				<sfdc:object key="Id" value-ref="#[id]" />
+			</sfdc:object>
+		</sfdc:update-single>
+		<logger level="INFO" category="com.confluex.Process_Contact_Changes" 
+        	message="After sfdc:update-single, payload = #[payload]" doc:name="Logger"/>
+
+    </flow>
+    
+    
+    <flow name="Poll_Unprocessed_Contact_Changes" doc:name="Poll_Unprocessed_Contact_Changes">
+		
+		<poll frequency="10000" doc:name="Poll">
+			<sfdc:query config-ref="Salesforce" doc:name="fetch unprocessed stream events"
+				query="SELECT Id, ContactID__c FROM Stream_Event__c WHERE Status__c = NULL ORDER BY LastModifiedDate ASC LIMIT 200" />
+		</poll>
+		<logger level="INFO" category="com.confluex.Poll_Unprocessed_Contact_Changes" doc:name="Logger"
+			message="Polled #[payload.size()] events from Salesforce" />
+        
+        <collection-splitter doc:name="Collection Splitter" />
+        <logger level="INFO" category="com.confluex.Poll_Unprocessed_Contact_Changes" doc:name="Logger"
+			message="Processing event from Salesforce, payload = #[payload]" />
+        
+        <vm:outbound-endpoint exchange-pattern="one-way" path="contact-changes" doc:name="contact-changes"/>
+		
+	</flow>
+	
+</mule>
